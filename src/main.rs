@@ -13,6 +13,12 @@ use actix_web_httpauth::middleware::HttpAuthentication;
 use anyhow::Result;
 use clap::{crate_version, CommandFactory, Parser};
 use colored::*;
+use dav_server::{
+    fakels::FakeLs,
+    actix::{DavRequest, DavResponse},
+    DavConfig, DavHandler,
+    localfs::LocalFs
+};
 use fast_qr::QRBuilder;
 use log::{error, warn};
 
@@ -370,6 +376,16 @@ fn configure_app(app: &mut web::ServiceConfig, conf: &MiniserveConfig) {
         // Handle single files
         app.service(web::resource(["", "/"]).route(web::to(listing::file_handler)));
     } else {
+        let dav_server = DavHandler::builder()
+            .filesystem(LocalFs::new(conf.path.clone(), false, false, false))
+            .locksystem(FakeLs::new())
+            .strip_prefix("/dav")
+            .build_handler();
+        app.service(
+            web::resource("/dav/{tail:.*}")
+                .app_data(web::Data::new(dav_server.clone()))
+                .to(dav_handler)
+        );
         if conf.file_upload {
             // Allow file upload
             app.service(web::resource("/upload").route(web::post().to(file_op::upload_file)));
@@ -394,4 +410,14 @@ async fn css(stylesheet: web::Data<String>) -> impl Responder {
     HttpResponse::Ok()
         .insert_header(ContentType(mime::TEXT_CSS))
         .body(stylesheet.to_string())
+}
+
+async fn dav_handler(req: DavRequest, davhandler: web::Data<DavHandler>) -> DavResponse {
+    if let Some(prefix) = req.prefix() {
+        // unreachable!();
+        let config = DavConfig::new().strip_prefix(prefix);
+        davhandler.handle_with(config, req.request).await.into()
+    } else {
+        davhandler.handle(req.request).await.into()
+    }
 }
